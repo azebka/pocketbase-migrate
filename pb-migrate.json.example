@@ -1,0 +1,25 @@
+{
+  "pb": {
+    "local_old": {
+      "url": "http://127.0.0.1:8090",
+      "user": "admin@pocketbase.com",
+      "password": "PASS",
+      "bin": "./pocketbase/pocketbase",
+      "data": "./pocketbase-old/pb_data"
+    },
+    "local_new": {
+      "url": "http://127.0.0.1:8091",
+      "user": "admin@pocketbase.com",
+      "password": "PASS",
+      "bin": "./pocketbase/pocketbase",
+      "data": "./pocketbase/pb_data"
+    },
+    "dev": {
+      "url": "https://api.pocketbase.com",
+      "user": "admin@pocketbase.com",
+      "password": "PASS"
+    }
+  },
+  "direction": ["local_old", "local_new"],
+  "collections": ["tags", "locations", "prices"]
+}
