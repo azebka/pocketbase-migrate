@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import PocketBase from "pocketbase";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,12 +27,62 @@ function normalizeServer(server, key) {
     );
   }
   return {
+    type: "pb",
     url,
     user,
     password,
     bin: typeof bin === "string" && bin.trim() ? bin : null,
     data: typeof data === "string" && data.trim() ? data : null,
   };
+}
+
+function normalizeFileEndpoint(fileEndpoint, key) {
+  if (!fileEndpoint || typeof fileEndpoint !== "object") {
+    throw new Error(`Invalid file endpoint config for "${key}"`);
+  }
+
+  const dataPath = fileEndpoint.data ?? fileEndpoint.path ?? fileEndpoint.file;
+  if (typeof dataPath !== "string" || !dataPath.trim()) {
+    throw new Error(
+      `File endpoint "${key}" must include "data" (or "path") with output json path`,
+    );
+  }
+
+  return {
+    type: "file",
+    data: dataPath,
+  };
+}
+
+function normalizeEndpoint(endpoint, key) {
+  if (endpoint?.type === "file") return normalizeFileEndpoint(endpoint, key);
+  return normalizeServer(endpoint, key);
+}
+
+function resolveDirectionEndpoint(pb, key) {
+  if (pb[key]) {
+    return {
+      resolvedKey: key,
+      endpoint: normalizeEndpoint(pb[key], key),
+      aliasUsed: false,
+    };
+  }
+
+  if (key === "snapshot") {
+    const fileEndpoints = Object.entries(pb).filter(
+      ([, endpoint]) => endpoint?.type === "file",
+    );
+    if (fileEndpoints.length === 1) {
+      const [resolvedKey, endpoint] = fileEndpoints[0];
+      return {
+        resolvedKey,
+        endpoint: normalizeEndpoint(endpoint, resolvedKey),
+        aliasUsed: true,
+      };
+    }
+  }
+
+  throw new Error(`Endpoint "${key}" from "direction" is missing in config.pb`);
 }
 
 async function readConfig() {
@@ -64,13 +114,20 @@ async function readConfig() {
     throw new Error('"collections" must be a non-empty array');
   }
 
+  const sourceEntry = resolveDirectionEndpoint(pb, sourceKey);
+  const targetEntry = resolveDirectionEndpoint(pb, targetKey);
+
   return {
     configPath,
     configDir,
     targetKey,
     sourceKey,
-    target: normalizeServer(pb[targetKey], targetKey),
-    source: normalizeServer(pb[sourceKey], sourceKey),
+    targetResolvedKey: targetEntry.resolvedKey,
+    sourceResolvedKey: sourceEntry.resolvedKey,
+    targetAliasUsed: targetEntry.aliasUsed,
+    sourceAliasUsed: sourceEntry.aliasUsed,
+    target: targetEntry.endpoint,
+    source: sourceEntry.endpoint,
     collections,
   };
 }
@@ -180,7 +237,7 @@ function gatherLocalEndpoints(source, sourceKey, target, targetKey) {
   const entries = [
     { ...source, key: sourceKey },
     { ...target, key: targetKey },
-  ].filter((server) => isLocalhostUrl(server.url));
+  ].filter((server) => server.type === "pb" && isLocalhostUrl(server.url));
 
   const byBind = new Map();
   for (const entry of entries) {
@@ -395,6 +452,44 @@ async function listAllRecords(pb, name) {
   return all;
 }
 
+async function exportCollectionsToJson({
+  sourcePb,
+  sourceKey,
+  sourceUrl,
+  outputPath,
+  configDir,
+  collections,
+}) {
+  const sourceIndex = await getCollectionsIndex(sourcePb);
+  const snapshot = {
+    exportedAt: ts(),
+    source: {
+      key: sourceKey,
+      url: sourceUrl,
+    },
+    collections: {},
+  };
+
+  for (const name of collections) {
+    if (!sourceIndex.byName.has(name)) {
+      console.warn(
+        `[${ts()}] WARN source collection "${name}" not found, exporting as empty array`,
+      );
+      snapshot.collections[name] = [];
+      continue;
+    }
+
+    const records = await listAllRecords(sourcePb, name);
+    snapshot.collections[name] = records.map((record) => deepClone(record));
+    console.log(`[${ts()}] Exported "${name}": ${records.length} records`);
+  }
+
+  const outputAbsPath = resolveFromConfigPath(configDir, outputPath);
+  await mkdir(path.dirname(outputAbsPath), { recursive: true });
+  await writeFile(`${outputAbsPath}`, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+  console.log(`[${ts()}] Snapshot written to: ${outputAbsPath}`);
+}
+
 /* ---------------- Files support ---------------- */
 
 async function fetchFileAsBlob(url) {
@@ -462,21 +557,64 @@ async function main() {
     source,
     targetKey,
     sourceKey,
+    targetResolvedKey,
+    sourceResolvedKey,
+    targetAliasUsed,
+    sourceAliasUsed,
     collections,
   } = await readConfig();
 
+  const sourceLabel = sourceAliasUsed
+    ? `${sourceKey} -> ${sourceResolvedKey}`
+    : sourceKey;
+  const targetLabel = targetAliasUsed
+    ? `${targetKey} -> ${targetResolvedKey}`
+    : targetKey;
+
   console.log(`[${ts()}] Config: ${configPath}`);
-  console.log(`[${ts()}] Source (${sourceKey}): ${source.url}`);
-  console.log(`[${ts()}] Target (${targetKey}): ${target.url}`);
-  console.log(`[${ts()}] Import order: ${collections.join(" → ")}`);
+  console.log(
+    `[${ts()}] Source (${sourceLabel}): ${source.type === "pb" ? source.url : source.data}`,
+  );
+  console.log(
+    `[${ts()}] Target (${targetLabel}): ${target.type === "pb" ? target.url : target.data}`,
+  );
+  console.log(`[${ts()}] Collections: ${collections.join(" → ")}`);
 
   const localEndpoints = gatherLocalEndpoints(
     source,
-    sourceKey,
+    sourceLabel,
     target,
-    targetKey,
+    targetLabel,
   );
   await ensureLocalPocketBases(localEndpoints, configDir);
+
+  if (source.type === "pb" && target.type === "file") {
+    const sourcePb = new PocketBase(source.url);
+    await authSuperuser(
+      sourcePb,
+      source.user,
+      source.password,
+      `source (${sourceLabel})`,
+    );
+
+    await exportCollectionsToJson({
+      sourcePb,
+      sourceKey: sourceLabel,
+      sourceUrl: source.url,
+      outputPath: target.data,
+      configDir,
+      collections,
+    });
+
+    console.log(`\n[${ts()}] Export completed`);
+    return;
+  }
+
+  if (source.type !== "pb" || target.type !== "pb") {
+    throw new Error(
+      `Unsupported direction: ${source.type} -> ${target.type}. Supported: pb -> pb, pb -> file`,
+    );
+  }
 
   const remote = new PocketBase(source.url);
   const local = new PocketBase(target.url);
@@ -485,13 +623,13 @@ async function main() {
     remote,
     source.user,
     source.password,
-    `source (${sourceKey})`,
+    `source (${sourceLabel})`,
   );
   await authSuperuser(
     local,
     target.user,
     target.password,
-    `target (${targetKey})`,
+    `target (${targetLabel})`,
   );
 
   const remoteIndex = await getCollectionsIndex(remote);

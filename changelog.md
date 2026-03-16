@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 - 2026-03-11
+
+- Added `pb -> file` export mode to dump selected collections into a JSON snapshot file.
+- Added support for `type: "file"` endpoints in config and output path parsing from `data`/`path`.
+- Added backward-compatible `direction` alias `"snapshot"` that resolves to a single configured file endpoint.
+- Updated `pb-migrate.json.example` and `readme.md` with export configuration.
+
 ## 0.3.0 - 2026-03-11
 
 - Added automatic target collection creation when a collection listed in `collections` is missing.

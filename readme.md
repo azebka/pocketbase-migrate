@@ -6,6 +6,7 @@ Supported flows:
 - `remote -> local`
 - `local -> remote`
 - `local -> local` (both instances can be started automatically)
+- `pb -> file` (export records to JSON snapshot)
 
 ## Requirements
 
@@ -38,9 +39,13 @@ File: `pb-migrate.json`
       "url": "https://api.pocketbase.com",
       "user": "admin@pocketbase.com",
       "password": "PASS"
+    },
+    "file": {
+      "type": "file",
+      "data": "./snapshot.json"
     }
   },
-  "direction": ["local_old", "local_new"],
+  "direction": ["local_old", "file"],
   "collections": ["tags", "locations", "prices"]
 }
 ```
@@ -51,6 +56,8 @@ Fields:
 - `pb.<name>.password` - superuser password
 - `pb.<name>.bin` - path to PocketBase binary (required only for local auto-start)
 - `pb.<name>.data` - path to `pb_data` (required only for local auto-start)
+- `pb.<name>.type` - set to `file` for JSON export endpoints
+- `pb.<name>.data` (for `type=file`) - output JSON file path
 - `direction` - `[sourceKey, targetKey]`
 - `collections` - migration order for collections
 
@@ -59,7 +66,13 @@ Notes:
 - If a local server is already running, `bin/data` are not used.
 - If a local server is not running, `bin` and `data` are required.
 - If a target collection from `collections` is missing, it is created from the source schema before record migration.
+- For `pb -> file`, all records from listed collections are exported into one JSON snapshot.
+- Legacy alias: `direction` target can be `"snapshot"` if there is exactly one `type=file` endpoint in config.
 - For backward compatibility, `dir` can be used instead of `data`.
+
+Modes:
+- `pb -> pb`: migrate records from source PocketBase to target PocketBase.
+- `pb -> file`: export source records to JSON snapshot.
 
 ## Run
 

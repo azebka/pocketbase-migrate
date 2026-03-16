@@ -18,8 +18,12 @@
       "url": "https://api.pocketbase.com",
       "user": "admin@pocketbase.com",
       "password": "PASS"
+    },
+    "file": {
+      "type": "file",
+      "data": "./snapshot.json"
     }
   },
-  "direction": ["local_old", "local_new"],
+  "direction": ["local_old", "file"],
   "collections": ["tags", "locations", "prices"]
 }
