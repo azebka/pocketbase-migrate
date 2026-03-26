@@ -21,9 +21,11 @@
     },
     "file": {
       "type": "file",
+      "schemas": true,
       "data": "./snapshot.json"
     }
   },
+  "overwrite": false,
   "direction": ["local_old", "file"],
   "collections": ["tags", "locations", "prices"]
 }

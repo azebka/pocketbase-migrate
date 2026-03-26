@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.0 - 2026-03-17
+
+- Added a file-endpoint flag to export snapshots without collection schemas.
+- Snapshot export can omit the `schemas` block when schema export is disabled.
+- Updated `pb-migrate.json.example` and `readme.md` with schema-export flag usage and behavior.
+
+## 0.6.0 - 2026-03-16
+
+- Added root config flag `overwrite` to control whether existing target records are skipped or updated when IDs match.
+- Applied `overwrite` to both `pb -> pb` migrations and `file -> pb` snapshot imports.
+- Updated logging, `pb-migrate.json.example`, and `readme.md` to document overwrite behavior.
+
+## 0.5.0 - 2026-03-16
+
+- Added `file -> pb` mode to import JSON snapshots back into PocketBase.
+- New snapshots now include exported collection schemas so missing target collections can be created during snapshot import.
+- Added backward compatibility for older snapshots without `schemas`; they can still be imported into existing target collections.
+- Snapshot import now skips PocketBase file fields with an explicit warning because uploaded binaries are not stored in the snapshot.
+- Updated `readme.md` with snapshot import usage and limitations.
+
 ## 0.4.0 - 2026-03-11
 
 - Added `pb -> file` export mode to dump selected collections into a JSON snapshot file.

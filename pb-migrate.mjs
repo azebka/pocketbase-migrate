@@ -42,15 +42,20 @@ function normalizeFileEndpoint(fileEndpoint, key) {
   }
 
   const dataPath = fileEndpoint.data ?? fileEndpoint.path ?? fileEndpoint.file;
+  const includeSchemas = fileEndpoint.schemas ?? true;
   if (typeof dataPath !== "string" || !dataPath.trim()) {
     throw new Error(
       `File endpoint "${key}" must include "data" (or "path") with output json path`,
     );
   }
+  if (typeof includeSchemas !== "boolean") {
+    throw new Error(`File endpoint "${key}" field "schemas" must be a boolean`);
+  }
 
   return {
     type: "file",
     data: dataPath,
+    schemas: includeSchemas,
   };
 }
 
@@ -114,6 +119,11 @@ async function readConfig() {
     throw new Error('"collections" must be a non-empty array');
   }
 
+  const overwrite = parsed?.overwrite ?? false;
+  if (typeof overwrite !== "boolean") {
+    throw new Error('"overwrite" must be a boolean');
+  }
+
   const sourceEntry = resolveDirectionEndpoint(pb, sourceKey);
   const targetEntry = resolveDirectionEndpoint(pb, targetKey);
 
@@ -128,6 +138,7 @@ async function readConfig() {
     sourceAliasUsed: sourceEntry.aliasUsed,
     target: targetEntry.endpoint,
     source: sourceEntry.endpoint,
+    overwrite,
     collections,
   };
 }
@@ -317,6 +328,10 @@ async function authSuperuser(pb, email, pass, label) {
 
 async function getCollectionsIndex(pb) {
   const all = await pb.collections.getFullList({ sort: "name" });
+  return buildCollectionsIndex(all);
+}
+
+function buildCollectionsIndex(all) {
   return {
     all,
     byName: new Map(all.map((c) => [c.name, c])),
@@ -333,19 +348,19 @@ function toMapByCollectionNameId(index) {
 }
 
 function buildCollectionImportPayload(
-  remoteSchema,
-  remoteIdToName,
+  sourceSchema,
+  sourceIdToName,
   targetNameToId,
   importingNames,
 ) {
-  const payload = deepClone(remoteSchema);
+  const payload = deepClone(sourceSchema);
 
   for (const field of payload.fields ?? []) {
     if (field.type !== "relation") continue;
-    const remoteTargetCollectionId = field.options?.collectionId;
-    if (!remoteTargetCollectionId) continue;
+    const sourceTargetCollectionId = field.options?.collectionId;
+    if (!sourceTargetCollectionId) continue;
 
-    const targetName = remoteIdToName.get(remoteTargetCollectionId);
+    const targetName = sourceIdToName.get(sourceTargetCollectionId);
     if (!targetName) continue;
 
     const existingTargetId = targetNameToId.get(targetName);
@@ -366,15 +381,19 @@ function buildCollectionImportPayload(
 
 async function ensureCollectionsExistInTarget(
   local,
-  remoteIndex,
+  sourceIndex,
   localIndex,
   collections,
-  remoteIdToName,
+  sourceIdToName,
 ) {
+  if (sourceIndex.all.length === 0) {
+    return localIndex;
+  }
+
   const missingNames = collections.filter(
-    (name) => !localIndex.byName.has(name) && remoteIndex.byName.has(name),
+    (name) => !localIndex.byName.has(name) && sourceIndex.byName.has(name),
   );
-  const missingInSource = collections.filter((name) => !remoteIndex.byName.has(name));
+  const missingInSource = collections.filter((name) => !sourceIndex.byName.has(name));
 
   for (const name of missingInSource) {
     console.warn(
@@ -388,8 +407,8 @@ async function ensureCollectionsExistInTarget(
   const importingNames = new Set(missingNames);
   const payload = missingNames.map((name) =>
     buildCollectionImportPayload(
-      remoteIndex.byName.get(name),
-      remoteIdToName,
+      sourceIndex.byName.get(name),
+      sourceIdToName,
       targetNameToId,
       importingNames,
     ),
@@ -406,6 +425,20 @@ async function ensureCollectionsExistInTarget(
   );
 
   return updatedLocalIndex;
+}
+
+function getRelationCollectionNameMap(index) {
+  return new Map(index.all.map((collection) => [collection.id, collection.name]));
+}
+
+function getSchemaForImport(sourceIndex, targetIndex, name) {
+  return sourceIndex.byName.get(name) ?? targetIndex.byName.get(name) ?? null;
+}
+
+function dropFileFields(data, fileFields) {
+  for (const field of fileFields) {
+    delete data[field.name];
+  }
 }
 
 function pickRecordDataForCreate(record, localSchema) {
@@ -458,10 +491,12 @@ async function exportCollectionsToJson({
   sourceUrl,
   outputPath,
   configDir,
+  includeSchemas = true,
   collections,
 }) {
   const sourceIndex = await getCollectionsIndex(sourcePb);
   const snapshot = {
+    snapshotVersion: 2,
     exportedAt: ts(),
     source: {
       key: sourceKey,
@@ -469,6 +504,9 @@ async function exportCollectionsToJson({
     },
     collections: {},
   };
+  if (includeSchemas) {
+    snapshot.schemas = {};
+  }
 
   for (const name of collections) {
     if (!sourceIndex.byName.has(name)) {
@@ -479,15 +517,72 @@ async function exportCollectionsToJson({
       continue;
     }
 
+    if (includeSchemas) {
+      snapshot.schemas[name] = deepClone(sourceIndex.byName.get(name));
+    }
     const records = await listAllRecords(sourcePb, name);
     snapshot.collections[name] = records.map((record) => deepClone(record));
     console.log(`[${ts()}] Exported "${name}": ${records.length} records`);
   }
 
+  console.log(
+    `[${ts()}] Snapshot schemas: ${includeSchemas ? "enabled" : "disabled by config"}`,
+  );
   const outputAbsPath = resolveFromConfigPath(configDir, outputPath);
   await mkdir(path.dirname(outputAbsPath), { recursive: true });
   await writeFile(`${outputAbsPath}`, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
   console.log(`[${ts()}] Snapshot written to: ${outputAbsPath}`);
+}
+
+async function readSnapshotFile({ inputPath, configDir }) {
+  const snapshotPath = resolveFromConfigPath(configDir, inputPath);
+  const raw = await readFile(snapshotPath, "utf8");
+  let snapshot;
+  try {
+    snapshot = JSON.parse(raw);
+  } catch {
+    throw new Error(`Invalid JSON in snapshot file: ${snapshotPath}`);
+  }
+
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new Error(`Snapshot file must contain a JSON object: ${snapshotPath}`);
+  }
+  if (!snapshot.collections || typeof snapshot.collections !== "object") {
+    throw new Error(`Snapshot file is missing "collections": ${snapshotPath}`);
+  }
+
+  return {
+    snapshotPath,
+    snapshot,
+  };
+}
+
+function buildSnapshotSchemaIndex(snapshot) {
+  const schemas = snapshot?.schemas;
+  if (!schemas || typeof schemas !== "object") {
+    return buildCollectionsIndex([]);
+  }
+
+  const all = Object.entries(schemas)
+    .map(([name, schema]) => {
+      if (!schema || typeof schema !== "object") return null;
+      return {
+        ...deepClone(schema),
+        name: schema.name ?? name,
+      };
+    })
+    .filter(Boolean);
+
+  return buildCollectionsIndex(all);
+}
+
+function getSnapshotRecords(snapshot, name) {
+  const entry = snapshot.collections?.[name];
+  if (Array.isArray(entry)) return entry;
+  if (entry && typeof entry === "object" && Array.isArray(entry.records)) {
+    return entry.records;
+  }
+  return [];
 }
 
 /* ---------------- Files support ---------------- */
@@ -547,6 +642,108 @@ async function copyFileFields(remote, record, data, fileFields) {
   }
 }
 
+async function importCollectionsIntoTarget({
+  sourceIndex,
+  targetIndex,
+  targetPb,
+  collections,
+  overwrite = false,
+  relationCollectionNamesById,
+  listSourceRecords,
+  sourcePb = null,
+  fileMode = "drop",
+}) {
+  const allowedTargets = new Set(collections);
+  const idMaps = new Map(collections.map((name) => [name, new Map()]));
+
+  for (const name of collections) {
+    console.log(`\n[${ts()}] === ${name} ===`);
+
+    const sourceSchema = getSchemaForImport(sourceIndex, targetIndex, name);
+    const targetSchema = targetIndex.byName.get(name);
+    if (!sourceSchema || !targetSchema) {
+      console.warn(`[${ts()}] Skipped (schema not found)`);
+      continue;
+    }
+
+    const relationFields = (sourceSchema.fields ?? []).filter(
+      (field) => field.type === "relation",
+    );
+    const fileFields = (sourceSchema.fields ?? []).filter(
+      (field) => field.type === "file",
+    );
+
+    if (fileMode === "drop" && fileFields.length > 0) {
+      console.warn(
+        `[${ts()}] WARN snapshot import for "${name}" skips file fields: ${fileFields.map((field) => field.name).join(", ")}`,
+      );
+    }
+
+    const records = await listSourceRecords(name);
+    console.log(`[${ts()}] Records: ${records.length}`);
+    const existingTargetRecords = await listAllRecords(targetPb, name);
+    const existingTargetIds = new Set(existingTargetRecords.map((rec) => rec.id));
+    console.log(
+      `[${ts()}] Existing target records by id: ${existingTargetIds.size}`,
+    );
+
+    const map = idMaps.get(name);
+    let ok = 0;
+    let overwritten = 0;
+    let skippedExisting = 0;
+
+    for (const record of records) {
+      const existsInTarget = existingTargetIds.has(record.id);
+      if (existsInTarget) {
+        map.set(record.id, record.id);
+        if (!overwrite) {
+          skippedExisting++;
+          continue;
+        }
+      }
+
+      const data = pickRecordDataForCreate(record, targetSchema);
+      remapRelations(
+        data,
+        relationFields,
+        relationCollectionNamesById,
+        idMaps,
+        allowedTargets,
+      );
+
+      if (fileMode === "copy") {
+        await copyFileFields(sourcePb, record, data, fileFields);
+      } else {
+        dropFileFields(data, fileFields);
+      }
+
+      try {
+        if (existsInTarget) {
+          await targetPb.collection(name).update(record.id, data);
+          overwritten++;
+        } else {
+          const created = await targetPb.collection(name).create(data);
+          map.set(record.id, created.id);
+          ok++;
+        }
+      } catch (e) {
+        const status = e?.status ?? e?.response?.status;
+        const msg = e?.message ?? String(e);
+        const errData = e?.data ? JSON.stringify(e.data, null, 2) : "";
+
+        console.warn(
+          `[${ts()}] FAIL ${name} ${record.id}: status=${status} ${msg}`,
+        );
+        if (errData) console.warn(errData);
+      }
+    }
+
+    console.log(
+      `[${ts()}] Imported: ${ok}, overwritten: ${overwritten}, skipped existing by id: ${skippedExisting}`,
+    );
+  }
+}
+
 /* ---------------- Main ---------------- */
 
 async function main() {
@@ -561,6 +758,7 @@ async function main() {
     sourceResolvedKey,
     targetAliasUsed,
     sourceAliasUsed,
+    overwrite,
     collections,
   } = await readConfig();
 
@@ -578,6 +776,7 @@ async function main() {
   console.log(
     `[${ts()}] Target (${targetLabel}): ${target.type === "pb" ? target.url : target.data}`,
   );
+  console.log(`[${ts()}] Overwrite existing by id: ${overwrite}`);
   console.log(`[${ts()}] Collections: ${collections.join(" → ")}`);
 
   const localEndpoints = gatherLocalEndpoints(
@@ -603,6 +802,7 @@ async function main() {
       sourceUrl: source.url,
       outputPath: target.data,
       configDir,
+      includeSchemas: target.schemas,
       collections,
     });
 
@@ -610,113 +810,108 @@ async function main() {
     return;
   }
 
+  if (source.type === "file" && target.type === "pb") {
+    const { snapshotPath, snapshot } = await readSnapshotFile({
+      inputPath: source.data,
+      configDir,
+    });
+    console.log(`[${ts()}] Snapshot: ${snapshotPath}`);
+
+    const targetPb = new PocketBase(target.url);
+    await authSuperuser(
+      targetPb,
+      target.user,
+      target.password,
+      `target (${targetLabel})`,
+    );
+
+    const snapshotIndex = buildSnapshotSchemaIndex(snapshot);
+    let targetIndex = await getCollectionsIndex(targetPb);
+    const targetIdToName = getRelationCollectionNameMap(targetIndex);
+    const snapshotIdToName =
+      snapshotIndex.all.length > 0
+        ? getRelationCollectionNameMap(snapshotIndex)
+        : targetIdToName;
+
+    if (snapshotIndex.all.length === 0) {
+      const missingTargetCollections = collections.filter(
+        (name) => !targetIndex.byName.has(name),
+      );
+      if (missingTargetCollections.length > 0) {
+        console.warn(
+          `[${ts()}] WARN snapshot has no schemas, missing target collections will be skipped: ${missingTargetCollections.join(", ")}`,
+        );
+      }
+    }
+
+    targetIndex = await ensureCollectionsExistInTarget(
+      targetPb,
+      snapshotIndex,
+      targetIndex,
+      collections,
+      snapshotIdToName,
+    );
+
+    await importCollectionsIntoTarget({
+      sourceIndex: snapshotIndex.all.length > 0 ? snapshotIndex : targetIndex,
+      targetIndex,
+      targetPb,
+      collections,
+      overwrite,
+      relationCollectionNamesById: snapshotIdToName,
+      listSourceRecords: async (name) => getSnapshotRecords(snapshot, name),
+      fileMode: "drop",
+    });
+
+    console.log(`\n[${ts()}] Import completed`);
+    return;
+  }
+
   if (source.type !== "pb" || target.type !== "pb") {
     throw new Error(
-      `Unsupported direction: ${source.type} -> ${target.type}. Supported: pb -> pb, pb -> file`,
+      `Unsupported direction: ${source.type} -> ${target.type}. Supported: pb -> pb, pb -> file, file -> pb`,
     );
   }
 
-  const remote = new PocketBase(source.url);
-  const local = new PocketBase(target.url);
+  const sourcePb = new PocketBase(source.url);
+  const targetPb = new PocketBase(target.url);
 
   await authSuperuser(
-    remote,
+    sourcePb,
     source.user,
     source.password,
     `source (${sourceLabel})`,
   );
   await authSuperuser(
-    local,
+    targetPb,
     target.user,
     target.password,
     `target (${targetLabel})`,
   );
 
-  const remoteIndex = await getCollectionsIndex(remote);
-  let localIndex = await getCollectionsIndex(local);
+  const sourceIndex = await getCollectionsIndex(sourcePb);
+  let targetIndex = await getCollectionsIndex(targetPb);
+  const sourceIdToName = getRelationCollectionNameMap(sourceIndex);
 
-  const remoteIdToName = new Map(remoteIndex.all.map((c) => [c.id, c.name]));
-  localIndex = await ensureCollectionsExistInTarget(
-    local,
-    remoteIndex,
-    localIndex,
+  targetIndex = await ensureCollectionsExistInTarget(
+    targetPb,
+    sourceIndex,
+    targetIndex,
     collections,
-    remoteIdToName,
+    sourceIdToName,
   );
 
-  const allowedTargets = new Set(collections);
-
-  const idMaps = new Map(collections.map((n) => [n, new Map()]));
-
-  for (const name of collections) {
-    console.log(`\n[${ts()}] === ${name} ===`);
-
-    const remoteSchema = remoteIndex.byName.get(name);
-    const localSchema = localIndex.byName.get(name);
-    if (!remoteSchema || !localSchema) {
-      console.warn(`[${ts()}] Skipped (schema not found)`);
-      continue;
-    }
-
-    const relationFields = (remoteSchema.fields ?? []).filter(
-      (f) => f.type === "relation",
-    );
-    const fileFields = (remoteSchema.fields ?? []).filter(
-      (f) => f.type === "file",
-    );
-
-    const records = await listAllRecords(remote, name);
-    console.log(`[${ts()}] Records: ${records.length}`);
-    const existingLocalRecords = await listAllRecords(local, name);
-    const existingLocalIds = new Set(existingLocalRecords.map((rec) => rec.id));
-    console.log(
-      `[${ts()}] Existing target records by id: ${existingLocalIds.size}`,
-    );
-
-    const map = idMaps.get(name);
-    let ok = 0;
-    let skippedExisting = 0;
-
-    for (const r of records) {
-      if (existingLocalIds.has(r.id)) {
-        // keep relation remapping intact for dependent collections
-        map.set(r.id, r.id);
-        skippedExisting++;
-        continue;
-      }
-
-      const data = pickRecordDataForCreate(r, localSchema);
-
-      // remap relations to already imported collections
-      remapRelations(
-        data,
-        relationFields,
-        remoteIdToName,
-        idMaps,
-        allowedTargets,
-      );
-
-      // IMPORTANT: convert remote file names -> actual uploaded files
-      await copyFileFields(remote, r, data, fileFields);
-
-      try {
-        const created = await local.collection(name).create(data);
-        map.set(r.id, created.id);
-        ok++;
-      } catch (e) {
-        const status = e?.status ?? e?.response?.status;
-        const msg = e?.message ?? String(e);
-        const errData = e?.data ? JSON.stringify(e.data, null, 2) : "";
-
-        console.warn(`[${ts()}] FAIL ${name} ${r.id}: status=${status} ${msg}`);
-        if (errData) console.warn(errData);
-      }
-    }
-
-    console.log(
-      `[${ts()}] Imported: ${ok}, skipped existing by id: ${skippedExisting}`,
-    );
-  }
+  await importCollectionsIntoTarget({
+    sourceIndex,
+    targetIndex,
+    targetPb,
+    collections,
+    overwrite,
+    relationCollectionNamesById: sourceIdToName,
+    listSourceRecords: async (name) => listAllRecords(sourcePb, name),
+    sourcePb,
+    fileMode: "copy",
+  });
 
   console.log(`\n[${ts()}] Migration completed`);
 }
