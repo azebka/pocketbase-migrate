@@ -18,7 +18,7 @@ Supported flows:
 
 ## Config
 
-File: `pb-migrate.json`
+Default file: `pb-migrate.json`
 
 ```json
 {
@@ -101,4 +101,12 @@ Examples:
 
 ```bash
 node pb-migrate.mjs
+```
+
+```bash
+node pb-migrate.mjs ./configs/proxtopus.json
+```
+
+```bash
+node pb-migrate.mjs --config ./configs/proxtopus.json
 ```

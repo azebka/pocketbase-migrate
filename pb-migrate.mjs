@@ -10,9 +10,56 @@ const CONFIG_FILE = "pb-migrate.json";
 const ts = () => new Date().toISOString();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function getConfigPath() {
+function getDefaultConfigPath() {
   const dir = path.dirname(fileURLToPath(import.meta.url));
   return path.join(dir, CONFIG_FILE);
+}
+
+function parseCliOptions(argv = process.argv.slice(2)) {
+  let configArg = null;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+
+    if (arg === "--config" || arg === "-c") {
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error(`Missing value for ${arg}`);
+      }
+      configArg = value;
+      i++;
+      continue;
+    }
+
+    if (arg.startsWith("--config=")) {
+      const value = arg.slice("--config=".length);
+      if (!value) {
+        throw new Error('Missing value for "--config"');
+      }
+      configArg = value;
+      continue;
+    }
+
+    if (arg.startsWith("-")) {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+
+    if (!configArg) {
+      configArg = arg;
+      continue;
+    }
+
+    throw new Error(`Unexpected extra argument: ${arg}`);
+  }
+
+  return { configArg };
+}
+
+function resolveConfigPath(configArg) {
+  if (!configArg) return getDefaultConfigPath();
+  return path.isAbsolute(configArg)
+    ? configArg
+    : path.resolve(process.cwd(), configArg);
 }
 
 function normalizeServer(server, key) {
@@ -90,8 +137,8 @@ function resolveDirectionEndpoint(pb, key) {
   throw new Error(`Endpoint "${key}" from "direction" is missing in config.pb`);
 }
 
-async function readConfig() {
-  const configPath = getConfigPath();
+async function readConfig(configArg = null) {
+  const configPath = resolveConfigPath(configArg);
   const configDir = path.dirname(configPath);
   const raw = await readFile(configPath, "utf8");
   let parsed;
@@ -747,6 +794,7 @@ async function importCollectionsIntoTarget({
 /* ---------------- Main ---------------- */
 
 async function main() {
+  const { configArg } = parseCliOptions();
   const {
     configPath,
     configDir,
@@ -760,7 +808,7 @@ async function main() {
     sourceAliasUsed,
     overwrite,
     collections,
-  } = await readConfig();
+  } = await readConfig(configArg);
 
   const sourceLabel = sourceAliasUsed
     ? `${sourceKey} -> ${sourceResolvedKey}`

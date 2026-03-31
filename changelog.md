@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 - 2026-03-31
+
+- Added CLI config path support.
+- You can now pass a custom config file as the first positional argument or via `--config` / `-c`.
+- Updated `readme.md` with custom config launch examples.
+
 ## 0.7.0 - 2026-03-17
 
 - Added a file-endpoint flag to export snapshots without collection schemas.
