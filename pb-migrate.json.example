@@ -26,6 +26,7 @@
     }
   },
   "overwrite": false,
+  "no_data": ["users"],
   "direction": ["local_old", "file"],
   "collections": ["tags", "locations", "prices"]
 }

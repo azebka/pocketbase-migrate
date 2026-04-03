@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0 - 2026-04-03
+
+- Added root config field `no_data` with collection names whose records should not be transferred.
+- `no_data` now works in `pb -> pb`, `pb -> file`, and `file -> pb` flows.
+- Snapshot export writes empty arrays for `no_data` collections while still preserving their schemas when enabled.
+- Updated `pb-migrate.json.example` and `readme.md` with `no_data` usage.
+
 ## 0.8.0 - 2026-03-31
 
 - Added CLI config path support.

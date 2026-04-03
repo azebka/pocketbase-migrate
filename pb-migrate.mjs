@@ -171,6 +171,11 @@ async function readConfig(configArg = null) {
     throw new Error('"overwrite" must be a boolean');
   }
 
+  const noData = parsed?.no_data ?? [];
+  if (!Array.isArray(noData) || noData.some((name) => typeof name !== "string")) {
+    throw new Error('"no_data" must be an array of collection names');
+  }
+
   const sourceEntry = resolveDirectionEndpoint(pb, sourceKey);
   const targetEntry = resolveDirectionEndpoint(pb, targetKey);
 
@@ -186,6 +191,7 @@ async function readConfig(configArg = null) {
     target: targetEntry.endpoint,
     source: sourceEntry.endpoint,
     overwrite,
+    noData,
     collections,
   };
 }
@@ -539,6 +545,7 @@ async function exportCollectionsToJson({
   outputPath,
   configDir,
   includeSchemas = true,
+  noData = new Set(),
   collections,
 }) {
   const sourceIndex = await getCollectionsIndex(sourcePb);
@@ -566,6 +573,11 @@ async function exportCollectionsToJson({
 
     if (includeSchemas) {
       snapshot.schemas[name] = deepClone(sourceIndex.byName.get(name));
+    }
+    if (noData.has(name)) {
+      snapshot.collections[name] = [];
+      console.log(`[${ts()}] Exported "${name}": 0 records (disabled by no_data)`);
+      continue;
     }
     const records = await listAllRecords(sourcePb, name);
     snapshot.collections[name] = records.map((record) => deepClone(record));
@@ -695,6 +707,7 @@ async function importCollectionsIntoTarget({
   targetPb,
   collections,
   overwrite = false,
+  noData = new Set(),
   relationCollectionNamesById,
   listSourceRecords,
   sourcePb = null,
@@ -724,6 +737,15 @@ async function importCollectionsIntoTarget({
       console.warn(
         `[${ts()}] WARN snapshot import for "${name}" skips file fields: ${fileFields.map((field) => field.name).join(", ")}`,
       );
+    }
+
+    if (noData.has(name)) {
+      console.log(`[${ts()}] Records: 0 (disabled by no_data)`);
+      console.log(`[${ts()}] Existing target records by id: skipped`);
+      console.log(
+        `[${ts()}] Imported: 0, overwritten: 0, skipped existing by id: 0`,
+      );
+      continue;
     }
 
     const records = await listSourceRecords(name);
@@ -807,8 +829,10 @@ async function main() {
     targetAliasUsed,
     sourceAliasUsed,
     overwrite,
+    noData,
     collections,
   } = await readConfig(configArg);
+  const noDataSet = new Set(noData);
 
   const sourceLabel = sourceAliasUsed
     ? `${sourceKey} -> ${sourceResolvedKey}`
@@ -825,6 +849,9 @@ async function main() {
     `[${ts()}] Target (${targetLabel}): ${target.type === "pb" ? target.url : target.data}`,
   );
   console.log(`[${ts()}] Overwrite existing by id: ${overwrite}`);
+  console.log(
+    `[${ts()}] no_data collections: ${noData.length > 0 ? noData.join(", ") : "-"}`,
+  );
   console.log(`[${ts()}] Collections: ${collections.join(" → ")}`);
 
   const localEndpoints = gatherLocalEndpoints(
@@ -851,6 +878,7 @@ async function main() {
       outputPath: target.data,
       configDir,
       includeSchemas: target.schemas,
+      noData: noDataSet,
       collections,
     });
 
@@ -906,6 +934,7 @@ async function main() {
       targetPb,
       collections,
       overwrite,
+      noData: noDataSet,
       relationCollectionNamesById: snapshotIdToName,
       listSourceRecords: async (name) => getSnapshotRecords(snapshot, name),
       fileMode: "drop",
@@ -955,6 +984,7 @@ async function main() {
     targetPb,
     collections,
     overwrite,
+    noData: noDataSet,
     relationCollectionNamesById: sourceIdToName,
     listSourceRecords: async (name) => listAllRecords(sourcePb, name),
     sourcePb,

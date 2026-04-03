@@ -49,6 +49,7 @@ Default file: `pb-migrate.json`
     }
   },
   "overwrite": false,
+  "no_data": ["users"],
   "direction": ["local_old", "file"],
   "collections": ["tags", "locations", "prices"]
 }
@@ -65,6 +66,7 @@ Fields:
 - `pb.<name>.schemas` - if `false`, export snapshot without collection schemas
 - `pb.<name>.data` (for `type=file`) - output JSON file path
 - `overwrite` - if `true`, update existing target records when IDs match
+- `no_data` - list of collection names whose records should not be transferred
 - `direction` - `[sourceKey, targetKey]`
 - `collections` - migration order for collections
 
@@ -76,7 +78,9 @@ Notes:
 - If a target collection from `collections` is missing, it is created from the source schema before record migration.
 - If `overwrite=false`, existing target records with the same ID are skipped.
 - If `overwrite=true`, existing target records with the same ID are updated in place.
+- If a collection is listed in `no_data`, its schema is still used, but its records are skipped.
 - For `pb -> file`, all records from listed collections are exported into one JSON snapshot.
+- For `pb -> file`, collections from `no_data` are written as empty arrays, for example `"users": []`.
 - If `pb.<name>.schemas=false`, exported snapshot will not contain `schemas`.
 - New snapshots include collection schemas, so `file -> pb` can create missing target collections automatically.
 - Old snapshots without `schemas` can still be imported, but only into already existing target collections.
